@@ -1,18 +1,15 @@
-#include <sys/ioctl.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/i2c-dev.h>
+#include <linux/i2c.h>
 #include <signal.h>
-#include <string.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
+#include <string.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
-#include <linux/i2c.h>
-#include <linux/i2c-dev.h>
-#include <i2c/smbus.h>
-#include "i2cbusses.h"
-#include "util.h"
-#include "../version.h"
 
 #define BUS 4
 #define ADDR_CA57 0x7F
@@ -26,13 +23,54 @@ static int to12bit(int val)
   return ((val >> 8) + ((val & 0xFF) << 8)) >> 4;
 }
 
+static __s32 i2c_smbus_access(int file, char read_write, __u8 command,
+                              int size, union i2c_smbus_data *data)
+{
+	struct i2c_smbus_ioctl_data args;
+	__s32 err;
+
+	args.read_write = read_write;
+	args.command = command;
+	args.size = size;
+	args.data = data;
+
+	err = ioctl(file, I2C_SMBUS, &args);
+	if (err == -1)
+		err = -errno;
+	return err;
+}
+
+static __s32 i2c_smbus_read_word_data(int file, __u8 command)
+{
+	union i2c_smbus_data data;
+	int err;
+
+	err = i2c_smbus_access(file, I2C_SMBUS_READ, command,
+                           I2C_SMBUS_WORD_DATA, &data);
+	if (err < 0)
+		return err;
+
+	return 0x0FFFF & data.word;
+}
+
+static __s32 i2c_smbus_write_byte_data(int file, __u8 command, __u8 value)
+{
+	union i2c_smbus_data data;
+
+	data.byte = value;
+
+	return i2c_smbus_access(file, I2C_SMBUS_WRITE, command,
+				I2C_SMBUS_BYTE_DATA, &data);
+}
+
 static double process(char addr, const char *name, int file, bool print)
 {
   int res;
   long int mV, uA;
   double P;
 
-  res = set_slave_addr(file, addr, 0);
+  /* Select slave address */
+  res = ioctl(file, I2C_SLAVE, addr);
   if (res < 0)
     exit(1);
 
@@ -80,9 +118,25 @@ static void sigint_handler(int sig)
   gstop = true;
 }
 
-int main(int argc, char *argv[])
+int open_bus(void)
 {
   char filename[32];
+  int file;
+
+  snprintf(filename, sizeof(filename), "/dev/i2c/%d", BUS);
+  filename[sizeof(filename) - 1] = '\0';
+  file = open(filename, O_RDWR);
+
+  if (file < 0 && (errno == ENOENT || errno == ENOTDIR)) {
+    sprintf(filename, "/dev/i2c-%d", BUS);
+    file = open(filename, O_RDWR);
+  }
+
+  return file;
+}
+
+int main(int argc, char *argv[])
+{
   int file;
   int span;
   long long int uspan;
@@ -93,7 +147,7 @@ int main(int argc, char *argv[])
   gstop = false;
   signal(SIGINT, sigint_handler);
 
-  file = open_i2c_dev(BUS, filename, sizeof(filename), 0);
+  file = open_bus();
   if (file < 0)
     exit(1);
 
