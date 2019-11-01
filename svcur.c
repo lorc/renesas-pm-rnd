@@ -1,5 +1,6 @@
 #include <sys/ioctl.h>
 #include <errno.h>
+#include <signal.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,15 +73,25 @@ static long int usecdiff(struct timespec *a, struct timespec *b)
       (b->tv_nsec - a->tv_nsec) / 1000;
 }
 
+static volatile bool gstop;
+
+static void sigint_handler(int sig)
+{
+  gstop = true;
+}
+
 int main(int argc, char *argv[])
 {
   char filename[32];
   int file;
   int span;
-  long int uspan;
+  long long int uspan;
   struct timespec cur, prev;
   double totalE_SOC = 0;
   double totalE_A57 = 0;
+
+  gstop = false;
+  signal(SIGINT, sigint_handler);
 
   file = open_i2c_dev(BUS, filename, sizeof(filename), 0);
   if (file < 0)
@@ -99,7 +110,7 @@ int main(int argc, char *argv[])
   uspan = span * 1000000;
   clock_gettime(CLOCK_REALTIME, &prev);
 
-  while (uspan > 0)
+  while (uspan > 0 && !gstop)
   {
     long int diff;
     double E_SOC, E_A57;
